@@ -77,6 +77,29 @@ async def test_events_wait_while_the_server_is_away_and_arrive_once():
             assert "listen" in requests(back, "starlink.failed")
 
 
+async def test_an_event_too_large_for_a_report_arrives_without_its_payload():
+    async with serving() as served, client() as boss:
+        await admin(served, boss)
+        _, token = await enrol(served, boss, "kana-vm")
+        async with node(server=served.url, token=token) as linked:
+            await linked.audit.publish(
+                "probe.spoke",
+                context=AuditContext(agent_id="kana"),
+                payload={"text": "x" * 1024 * 1024},
+            )
+            await linked.audit.publish(
+                "probe.spoke", context=AuditContext(agent_id="kana"), payload={"n": 2}
+            )
+            await until(lambda: len(reported(served, "probe.spoke")) >= 2)
+            spoke = reported(served, "probe.spoke")
+            # the large one comes with how much was left out, the one after it whole
+            assert any(
+                isinstance(size := payload.get("omitted"), int) and size > 1024 * 1024
+                for payload in spoke
+            )
+            assert {"n": 2} in spoke
+
+
 async def test_an_answer_waits_for_the_server_to_come_back():
     port = free_port()
     async with AsyncExitStack() as stack:
