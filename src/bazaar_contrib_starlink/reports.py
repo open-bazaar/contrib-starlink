@@ -9,7 +9,7 @@ lazy import logging
 lazy from collections import deque
 
 from bazaar_contrib_audit import AuditEvent
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from .link import REQUEST_MS, Link
 
@@ -18,6 +18,7 @@ from .link import REQUEST_MS, Link
 BATCH_BYTES = 512 * 1024
 
 EVENT = TypeAdapter[AuditEvent](AuditEvent)
+PAYLOAD = TypeAdapter[JsonValue](JsonValue)
 
 
 class _Confirmed(BaseModel):
@@ -40,10 +41,17 @@ class Reports:
         self._ready = asyncio.Event()
 
     def put(self, event: AuditEvent) -> None:
-        """Queue the event, unless it cannot fit a request or the queue is full."""
+        """Queue the event, unless the queue is full; an event that cannot fit a
+        request goes with its payload left out."""
+        envelope = len(_envelope(event.run_id))
         encoded = EVENT.dump_json(event)
+        if envelope + len(encoded) > BATCH_BYTES:
+            event = event.model_copy(
+                update={"payload": {"omitted": len(PAYLOAD.dump_json(event.payload))}}
+            )
+            encoded = EVENT.dump_json(event)
         if (
-            len(_envelope(event.run_id)) + len(encoded) > BATCH_BYTES
+            envelope + len(encoded) > BATCH_BYTES
             or self._bytes + len(encoded) > BATCH_BYTES
         ):
             self._dropped += 1
