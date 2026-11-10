@@ -1,6 +1,6 @@
 """starlink between a real server's computers and a node exposing the probe's
 members: calls and their answers, reports, the token, a server that goes
-away, and a node that leaves."""
+away, several servers, and a node that leaves."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ async def test_the_server_calls_what_the_node_exposes_and_nothing_else():
     async with serving() as served, client() as boss:
         await admin(served, boss)
         ref, token = await enrol(served, boss, "kana-vm")
-        async with node(server=served.url, token=token):
+        async with node({"server": served.url, "token": token}):
             echoed = await ask(served, boss, ref, "echo", "hello")
             assert echoed.json() == {"value": "hello"}
             # a member the probe keeps to itself is not reached
@@ -50,7 +50,7 @@ async def test_events_wait_while_the_server_is_away_and_arrive_once():
         await admin(served, boss)
         _, token = await enrol(served, boss, "kana-vm")
     # the node starts and speaks while the server is down
-    async with node(server=served.url, token=token) as linked:
+    async with node({"server": served.url, "token": token}) as linked:
         for n in (1, 2, 3):
             await linked.audit.publish(
                 "probe.spoke", context=AuditContext(agent_id="kana"), payload={"n": n}
@@ -77,11 +77,34 @@ async def test_events_wait_while_the_server_is_away_and_arrive_once():
             assert "listen" in requests(back, "starlink.failed")
 
 
+async def test_a_node_links_to_each_server_it_has_an_entry_for():
+    port = free_port()
+    async with client() as boss, serving() as first:
+        await admin(first, boss)
+        ref, token = await enrol(first, boss, "kana-vm")
+        # the other server keeps the same database, so the account and the
+        # computer are the same there; it is away when the node starts
+        async with node(
+            {"server": first.url, "token": token},
+            {"server": f"http://127.0.0.1:{port}", "token": token},
+        ) as linked:
+            await linked.audit.publish(
+                "probe.spoke", context=AuditContext(agent_id="kana"), payload={"n": 1}
+            )
+            await until(lambda: {"n": 1} in reported(first, "probe.spoke"))
+            echoed = await ask(first, boss, ref, "echo", "first")
+            assert echoed.json() == {"value": "first"}
+            async with serving(port) as other:
+                await until(lambda: {"n": 1} in reported(other, "probe.spoke"))
+                echoed = await ask(other, boss, ref, "echo", "other")
+                assert echoed.json() == {"value": "other"}
+
+
 async def test_an_event_too_large_for_a_report_arrives_without_its_payload():
     async with serving() as served, client() as boss:
         await admin(served, boss)
         _, token = await enrol(served, boss, "kana-vm")
-        async with node(server=served.url, token=token) as linked:
+        async with node({"server": served.url, "token": token}) as linked:
             await linked.audit.publish(
                 "probe.spoke",
                 context=AuditContext(agent_id="kana"),
@@ -108,7 +131,7 @@ async def test_an_answer_waits_for_the_server_to_come_back():
             await admin(served, boss)
             ref, token = await enrol(served, boss, "kana-vm")
             linked = await stack.enter_async_context(
-                node(server=served.url, token=token)
+                node({"server": served.url, "token": token})
             )
             asking = asyncio.create_task(ask(served, boss, ref, "slow", 3_000))
             await until(lambda: bool(starlink_probe.under_way))
@@ -128,23 +151,28 @@ async def test_the_token_comes_from_the_environment_unless_given(
         await admin(served, boss)
         ref, token = await enrol(served, boss, "kana-vm")
         monkeypatch.setenv("STARLINK_TOKEN", token)
-        async with node(server=served.url, token_env="STARLINK_TOKEN"):
+        async with node({"server": served.url, "token_env": "STARLINK_TOKEN"}):
             answered = await ask(served, boss, ref, "echo", "from the environment")
             assert answered.json() == {"value": "from the environment"}
         monkeypatch.setenv("STARLINK_TOKEN", "not-the-token")
-        async with node(server=served.url, token=token, token_env="STARLINK_TOKEN"):
+        async with node(
+            {"server": served.url, "token": token, "token_env": "STARLINK_TOKEN"}
+        ):
             answered = await ask(served, boss, ref, "echo", "given")
             assert answered.json() == {"value": "given"}
 
 
 async def test_a_token_the_server_does_not_take_stops_starlink():
-    async with serving() as served, node(server=served.url, token="x:y") as linked:
+    async with (
+        serving() as served,
+        node({"server": served.url, "token": "x:y"}) as linked,
+    ):
         await until(lambda: isinstance(linked.state(), Failed))
         assert "token" in str(linked.state())
 
 
 async def test_starlink_without_a_token_does_not_start():
-    async with node(server=f"http://127.0.0.1:{free_port()}") as linked:
+    async with node({"server": f"http://127.0.0.1:{free_port()}"}) as linked:
         await until(lambda: isinstance(linked.state(), Failed))
         assert "token" in str(linked.state())
 
@@ -154,7 +182,7 @@ async def test_leaving_ends_the_calls_under_way():
         await admin(served, boss)
         ref, token = await enrol(served, boss, "kana-vm")
         async with asyncio.timeout(30):
-            async with node(server=served.url, token=token):
+            async with node({"server": served.url, "token": token}):
                 asking = asyncio.create_task(ask(served, boss, ref, "slow", 600_000))
                 await until(lambda: bool(starlink_probe.under_way))
             # the node is gone well before the call would have ended
