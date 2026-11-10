@@ -10,3 +10,5 @@ bcn contrib add bazaar-contrib-starlink \
 ```
 
 `token_env` names an environment variable holding the token instead; `token` wins when both are set.
+
+To link a node to several servers, give its configuration a `starlink` entry for each.

@@ -217,8 +217,9 @@ class Node:
 
 
 @asynccontextmanager
-async def node(**starlink: object) -> AsyncIterator[Node]:
-    """A node with the probe's members and starlink set as given."""
+async def node(*links: dict[str, object]) -> AsyncIterator[Node]:
+    """A node with the probe's members and a starlink entry set as given for
+    each link."""
     found: dict[str, Audit] = {}
     heard: list[AuditEvent] = []
 
@@ -241,7 +242,10 @@ async def node(**starlink: object) -> AsyncIterator[Node]:
             ),
             ContribSpec(contrib="sidecar"),
             ContribSpec(contrib="probe"),
-            ContribSpec(contrib="starlink", config=starlink),
+            *(
+                ContribSpec(contrib="starlink", config=link, location=f"links[{index}]")
+                for index, link in enumerate(links)
+            ),
         ],
     )
     composition = composition.model_copy(

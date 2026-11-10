@@ -15,6 +15,7 @@ from bazaar_contrib_timer import TIMER
 from bazaar_core import Context, Contrib, ServiceKey
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 lazy import aiohttp
+lazy from bazaar_core import Composition, ContribEntry
 
 from .reports import Reports
 lazy from .calls import Calls
@@ -54,21 +55,42 @@ async def lifespan(ctx: Context, config: Config) -> AsyncIterator[None]:
             ctx.accept(AUDIT),
         )
         reports = Reports(link)
-        ctx.offer(REPORTS, reports)
-        try:
-            async with asyncio.TaskGroup() as tasks:
-                tasks.create_task(
-                    Calls(link, ctx.accept(CLIENT), timer, tasks).listen()
-                )
-                tasks.create_task(reports.send())
-                try:
-                    yield
-                finally:
-                    # the calls under way and the events not yet confirmed
-                    # end with the node
-                    tasks.cancel()
-        except* Rejected as rejected:
-            raise rejected.exceptions[0] from None
+
+        @asynccontextmanager
+        async def queue(ctx: Context) -> AsyncIterator[None]:
+            ctx.offer(REPORTS, reports)
+            yield
+
+        # the queue is this entry's own, so a node links to a server per entry
+        async with ctx.enable(
+            Composition(
+                entries=[
+                    ContribEntry(
+                        name=f"{ctx.name}/reports",
+                        definition=Contrib(
+                            offers=[REPORTS],
+                            lifespan=queue,
+                            listen={AUDIT_EVENT: _queued},
+                        ),
+                    )
+                ]
+            ),
+            local=(REPORTS,),
+        ):
+            try:
+                async with asyncio.TaskGroup() as tasks:
+                    tasks.create_task(
+                        Calls(link, ctx.accept(CLIENT), timer, tasks).listen()
+                    )
+                    tasks.create_task(reports.send())
+                    try:
+                        yield
+                    finally:
+                        # the calls under way and the events not yet confirmed
+                        # end with the node
+                        tasks.cancel()
+            except* Rejected as rejected:
+                raise rejected.exceptions[0] from None
 
 
 async def _queued(ctx: Context, event: AuditEvent) -> None:
@@ -78,7 +100,5 @@ async def _queued(ctx: Context, event: AuditEvent) -> None:
 starlink = Contrib(
     config=Config,
     accepts=[TIMER, AUDIT, CLIENT],
-    offers=[REPORTS],
     lifespan=lifespan,
-    listen={AUDIT_EVENT: _queued},
 )
